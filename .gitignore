@@ -1,0 +1,9 @@
+# Build output
+target/
+
+# Credentials: copy mise.local.toml.example to mise.local.toml
+mise.local.toml
+.cargo/secrets.toml
+
+# Logs from laptop-test.sh and the serial port (they name your networks)
+/test-logs/

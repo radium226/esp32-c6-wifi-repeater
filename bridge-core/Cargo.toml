@@ -1,0 +1,10 @@
+[package]
+edition      = "2024"
+name         = "bridge-core"
+rust-version = "1.95"
+version      = "0.1.0"
+license      = "Beerware"
+
+# Hardware-independent pseudo-bridge logic: builds for the ESP32 (no_std) and
+# for the host, so `cargo test` here runs on the laptop.
+[dependencies]

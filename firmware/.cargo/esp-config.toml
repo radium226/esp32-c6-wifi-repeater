@@ -1,0 +1,8 @@
+# Keep user/runtime configuration values in this file.
+[env]
+ESP_LOG="info"
+# Room for full 1514-byte Ethernet frames (the default 1492 is an IP-stack MTU).
+ESP_RADIO_CONFIG_WIFI_MTU="1514"
+# The connection task subscribes to events while esp-radio waits on its own.
+ESP_RADIO_CONFIG_EVENT_CHANNEL_SUBSCRIBERS="4"
+ESP_RADIO_CONFIG_EVENT_CHANNEL_CAPACITY="8"

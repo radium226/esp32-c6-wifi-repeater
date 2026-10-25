@@ -1,0 +1,8 @@
+# Copy to mise.local.toml (never committed) and fill in.
+# Baked into the firmware at build time.
+[env]
+STA_SSID = "home network to repeat"
+STA_PASS = "its password"
+AP_SSID  = "home network to repeat-EXT"
+AP_PASS  = "at least 8 characters"
+OTA_PASS = "password for OTA updates (X-OTA-Password header)"

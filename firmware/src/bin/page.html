@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wi-Fi Repeater</title>
+<style>
+:root{--page-background:#f6f7f9;--card-background:#fff;--text:#1c2330;--text-muted:#6b7585;--border:#e3e6eb;--success:#1f9d55;--warning:#c27c0e;--danger:#d64545;--accent:#2f6fde}
+@media (prefers-color-scheme:dark){:root{--page-background:#12151b;--card-background:#1b2029;--text:#e6e9ef;--text-muted:#8b94a3;--border:#2a313c;--success:#3ccf7e;--warning:#e0a43a;--danger:#ef6b6b;--accent:#6c9cff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page-background);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:960px;margin:0 auto;padding:20px 16px 40px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;margin-bottom:18px}
+h1{font-size:22px;margin:0}
+h2{font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-muted);margin:0 0 10px}
+.badge{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600;color:#fff;background:var(--text-muted)}
+.badge.success{background:var(--success)}.badge.warning{background:var(--warning)}.badge.danger{background:var(--danger)}
+.muted{color:var(--text-muted)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{background:var(--card-background);border:1px solid var(--border);border-radius:12px;padding:16px}
+.full-width-card{margin-top:14px}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0}
+dt{color:var(--text-muted)}dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.rates{display:flex;gap:22px;margin-bottom:12px}
+.rate b{display:block;font-size:26px;font-variant-numeric:tabular-nums}
+.rate span{color:var(--text-muted);font-size:13px}
+.signal-bars{display:inline-flex;gap:2px;align-items:flex-end;height:14px;margin-right:6px;vertical-align:-1px}
+.signal-bars i{width:4px;background:var(--border);border-radius:1px}.signal-bars i.lit{background:var(--accent)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
+th{color:var(--text-muted);font-weight:600;font-size:13px}
+tr:last-child td{border-bottom:0}
+.horizontal-scroll{overflow-x:auto}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+#unreachable-banner{display:none;margin-bottom:14px;padding:10px 14px;border-radius:10px;background:var(--danger);color:#fff}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Wi-Fi Repeater</h1>
+  <span id="address" class="muted"></span>
+  <span id="addressing-mode" class="badge"></span>
+</header>
+<div id="unreachable-banner">Can't reach the repeater. Retrying…</div>
+<div class="cards">
+  <section class="card">
+    <h2>Uplink</h2>
+    <dl>
+      <dt>Network</dt><dd id="uplink-ssid"></dd>
+      <dt>Status</dt><dd id="uplink-status"></dd>
+      <dt>Signal</dt><dd id="uplink-signal"></dd>
+      <dt>Channel</dt><dd id="uplink-channel"></dd>
+      <dt>Router</dt><dd><code id="uplink-router-mac"></code></dd>
+      <dt>Failed tries</dt><dd id="uplink-failed-attempts"></dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>Traffic</h2>
+    <div class="rates">
+      <div class="rate"><b id="rate-to-clients">–</b><span>to clients</span></div>
+      <div class="rate"><b id="rate-from-clients">–</b><span>from clients</span></div>
+    </div>
+    <dl>
+      <dt>Total to clients</dt><dd id="total-to-clients"></dd>
+      <dt>Total from clients</dt><dd id="total-from-clients"></dd>
+      <dt>Dropped frames</dt><dd id="dropped-frames"></dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>System</h2>
+    <dl>
+      <dt>Repeater network</dt><dd id="access-point-ssid"></dd>
+      <dt>Uptime</dt><dd id="uptime"></dd>
+      <dt>Memory free</dt><dd id="memory"></dd>
+      <dt>Chip temperature</dt><dd id="chip-temperature"></dd>
+      <dt>TX power</dt><dd id="tx-power"></dd>
+      <dt>Firmware</dt><dd id="firmware"></dd>
+    </dl>
+  </section>
+</div>
+<section class="card full-width-card">
+  <h2>Clients</h2>
+  <div class="horizontal-scroll">
+    <table>
+      <thead><tr><th>Name</th><th>IP address</th><th>MAC</th><th>Connected</th></tr></thead>
+      <tbody id="client-rows"></tbody>
+    </table>
+  </div>
+</section>
+</main>
+<script>
+const REFRESH_INTERVAL_MS = 2000;
+const elementById = id => document.getElementById(id);
+let previousStatus = null;
+
+function formatDuration(totalSeconds) {
+  if (totalSeconds < 60) return totalSeconds + " s";
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor(totalSeconds % 86400 / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  if (days) return `${days} d ${hours} h`;
+  if (hours) return `${hours} h ${minutes} min`;
+  return `${minutes} min`;
+}
+
+function formatBytes(byteCount) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = byteCount;
+  let unitIndex = 0;
+  while (value >= 1000 && unitIndex < units.length - 1) {
+    value /= 1000;
+    unitIndex++;
+  }
+  return (unitIndex ? value.toFixed(1) : value) + " " + units[unitIndex];
+}
+
+function formatBitrate(bytesPerSecond) {
+  const megabitsPerSecond = bytesPerSecond * 8 / 1e6;
+  return megabitsPerSecond.toFixed(megabitsPerSecond < 1 ? 2 : 1) + " Mbit/s";
+}
+
+function formatSignal(signalDbm) {
+  const barCount = signalDbm >= -55 ? 4 : signalDbm >= -65 ? 3 : signalDbm >= -75 ? 2 : 1;
+  const quality = ["", "weak", "fair", "good", "excellent"][barCount];
+  const bars = [1, 2, 3, 4]
+    .map(bar => `<i class="${bar <= barCount ? "lit" : ""}" style="height:${bar * 25}%"></i>`)
+    .join("");
+  return `<span class="signal-bars">${bars}</span>${signalDbm} dBm (${quality})`;
+}
+
+function escapeHtml(text) {
+  const replacements = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"};
+  return String(text).replace(/[&<>"]/g, character => replacements[character]);
+}
+
+function renderHeader(status) {
+  const ip = status.ip;
+  elementById("address").textContent = ip.address
+    ? `${ip.address} · ${status.hostname}.local`
+    : `${status.hostname}.local · no address yet`;
+  const [modeLabel, modeColor] = {
+    leased: ["DHCP lease", "success"],
+    waiting_for_lease: ["Waiting for DHCP", "warning"],
+    fallback: ["Fallback (uplink down)", "danger"],
+  }[ip.mode];
+  elementById("addressing-mode").textContent = modeLabel;
+  elementById("addressing-mode").className = "badge " + modeColor;
+}
+
+function renderUplink(status) {
+  const uplink = status.uplink;
+  const secondsSinceChange = status.uptime_s - uplink.changed_at_s;
+  elementById("uplink-ssid").textContent = uplink.ssid;
+  elementById("uplink-status").innerHTML = uplink.connected
+    ? `<span class="badge success">Connected</span> for ${formatDuration(secondsSinceChange)}`
+    : `<span class="badge danger">Down</span> since ${formatDuration(secondsSinceChange)}`;
+  elementById("uplink-signal").innerHTML = uplink.connected ? formatSignal(uplink.signal_dbm) : "–";
+  elementById("uplink-channel").textContent = uplink.connected ? uplink.channel : "–";
+  elementById("uplink-router-mac").textContent = uplink.connected ? uplink.bssid : "–";
+  elementById("uplink-failed-attempts").textContent = uplink.failed_attempts;
+}
+
+function renderTraffic(status) {
+  const traffic = status.traffic;
+  if (previousStatus && status.uptime_s > previousStatus.uptime_s) {
+    const secondsElapsed = status.uptime_s - previousStatus.uptime_s;
+    const bytesToClients = traffic.bytes_from_uplink - previousStatus.traffic.bytes_from_uplink;
+    const bytesFromClients = traffic.bytes_from_clients - previousStatus.traffic.bytes_from_clients;
+    elementById("rate-to-clients").textContent = formatBitrate(bytesToClients / secondsElapsed);
+    elementById("rate-from-clients").textContent = formatBitrate(bytesFromClients / secondsElapsed);
+  }
+  elementById("total-to-clients").textContent = formatBytes(traffic.bytes_from_uplink);
+  elementById("total-from-clients").textContent = formatBytes(traffic.bytes_from_clients);
+  elementById("dropped-frames").textContent = traffic.dropped_frames;
+}
+
+function renderSystem(status) {
+  const totalMemory = status.memory_free_bytes + status.memory_used_bytes;
+  const buildDate = new Date(status.build_time_unix_s * 1000).toLocaleString();
+  const trialNote = status.ota.state === "trial" ? ", on trial" : "";
+  elementById("access-point-ssid").textContent = status.access_point.ssid;
+  elementById("uptime").textContent = formatDuration(status.uptime_s);
+  elementById("memory").textContent = `${formatBytes(status.memory_free_bytes)} of ${formatBytes(totalMemory)}`;
+  elementById("chip-temperature").textContent = status.chip_temperature_c.toFixed(1) + " °C";
+  elementById("tx-power").textContent = status.tx_power_dbm + " dBm";
+  elementById("firmware").textContent = `v${status.version}, built ${buildDate} (${status.ota.slot}${trialNote})`;
+}
+
+// One row per device: clients associated with the AP, plus addresses the
+// bridge still knows for devices that left.
+function renderClients(status) {
+  const rowsByMac = new Map();
+  for (const client of status.associated_clients) {
+    rowsByMac.set(client.mac, {mac: client.mac, joinedAtSeconds: client.joined_at_s, ips: [], hostname: ""});
+  }
+  for (const address of status.client_addresses) {
+    const row = rowsByMac.get(address.mac) || {mac: address.mac, joinedAtSeconds: null, ips: [], hostname: ""};
+    row.ips.push(address.ip);
+    row.hostname = row.hostname || address.hostname;
+    rowsByMac.set(address.mac, row);
+  }
+  const hasLeft = row => row.joinedAtSeconds === null;
+  const sortedRows = [...rowsByMac.values()].sort(
+    (first, second) => hasLeft(first) - hasLeft(second) || first.mac.localeCompare(second.mac)
+  );
+  const muted = text => `<span class="muted">${text}</span>`;
+  elementById("client-rows").innerHTML = sortedRows.length
+    ? sortedRows.map(row => `<tr>
+        <td>${escapeHtml(row.hostname) || muted("unknown")}</td>
+        <td>${row.ips.map(escapeHtml).join("<br>") || muted("none yet")}</td>
+        <td><code>${row.mac}</code></td>
+        <td>${hasLeft(row) ? muted("left") : formatDuration(status.uptime_s - row.joinedAtSeconds)}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="4" class="muted">No clients connected.</td></tr>`;
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/api/status", {cache: "no-store"});
+    const status = await response.json();
+    renderHeader(status);
+    renderUplink(status);
+    renderTraffic(status);
+    renderSystem(status);
+    renderClients(status);
+    previousStatus = status;
+    elementById("unreachable-banner").style.display = "none";
+  } catch (error) {
+    elementById("unreachable-banner").style.display = "block";
+  }
+  setTimeout(refresh, REFRESH_INTERVAL_MS);
+}
+refresh();
+</script>
+</body>
+</html>

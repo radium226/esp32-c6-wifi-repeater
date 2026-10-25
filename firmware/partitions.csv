@@ -1,0 +1,5 @@
+# Two app slots for OTA updates; otadata records which one boots.
+# Name,   Type, SubType, Offset,   Size
+otadata,  data, ota,     0x9000,   0x2000
+ota_0,    app,  ota_0,   0x10000,  0x1F0000
+ota_1,    app,  ota_1,   0x200000, 0x1F0000

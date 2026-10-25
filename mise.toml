@@ -1,0 +1,142 @@
+# Tasks for the ESP32-C6 repeater. `mise tasks` lists them; `mise run <task>`.
+# Credentials come from mise.local.toml (never committed).
+# Heavy commands run under systemd-run with CPU and RAM caps so the laptop
+# stays responsive.
+
+[vars]
+capped = "systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 -p CPUQuota=400% --"
+elf = "target/riscv32imac-unknown-none-elf/release/wifi-repeater"
+# Two OTA slots; a USB flash goes to ota_0 and resets otadata so ota_0 boots.
+flash_args = "--chip esp32c6 --partition-table partitions.csv --target-app-partition ota_0 --erase-parts otadata"
+
+[env]
+ESP_PORT = "/dev/ttyACM0"
+# espflash comes from `cargo install espflash --locked`.
+_.path = ["{{env.HOME}}/.cargo/bin"]
+
+[tasks.secrets]
+description = "Create mise.local.toml from an old ESP8266 secrets.h (SECRETS_H=path, default ../include/secrets.h)"
+run = '''
+python3 -I - "${SECRETS_H:-../include/secrets.h}" mise.local.toml <<'EOF'
+import os, re, sys, json
+source, destination = sys.argv[1], sys.argv[2]
+if os.path.exists(destination):
+    sys.exit(f"{destination} already exists; delete it to regenerate")
+defines = dict(re.findall(r'#define\s+(\w+)\s+"([^"]*)"', open(source).read()))
+keys = ["STA_SSID", "STA_PASS", "AP_SSID", "AP_PASS", "OTA_PASS"]
+missing = [key for key in keys if key not in defines]
+if missing:
+    sys.exit(f"missing in {source}: {', '.join(missing)}")
+with open(os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
+    file.write("[env]\n" + "".join(f"{key} = {json.dumps(defines[key])}\n" for key in keys))
+print(f"wrote {destination}")
+EOF
+'''
+
+[tasks.build]
+description = "Build the release firmware"
+dir = "{{config_root}}/firmware"
+run = "{{vars.capped}} cargo build --release -j4"
+
+[tasks.flash]
+description = "Build the firmware and write it to the board over USB"
+depends = ["build"]
+dir = "{{config_root}}/firmware"
+run = "timeout 90 espflash flash {{vars.flash_args}} --port $ESP_PORT {{vars.elf}}"
+
+[tasks.log]
+description = "Show the board's log over USB (LOG_SECONDS=n to stop after n seconds)"
+run = '''
+# Don't touch DTR/RTS: espflash monitor would park the chip in the bootloader.
+timeout 3 stty -F $ESP_PORT raw -echo -hupcl 115200 || echo "warning: couldn't configure $ESP_PORT"
+if [ -n "${LOG_SECONDS:-}" ]; then timeout "$LOG_SECONDS" cat $ESP_PORT; else cat $ESP_PORT; fi
+'''
+
+[tasks.run]
+description = "Flash, then show the board's log for 20 seconds"
+depends = ["flash"]
+run = "LOG_SECONDS=20 mise run log"
+
+[tasks."flash:no-uplink"]
+description = "Flash a test build that can't find the home Wi-Fi, to try fallback mode (undo with `mise run flash`)"
+dir = "{{config_root}}/firmware"
+run = '''
+# A --scope unit inherits the environment; this overrides mise.local.toml.
+STA_SSID=NoSuchNetwork-test {{vars.capped}} cargo build --release -j4
+timeout 90 espflash flash {{vars.flash_args}} --port $ESP_PORT {{vars.elf}}
+'''
+
+[tasks.ota]
+description = "Build and install the firmware over Wi-Fi, then wait for the board to restart with it (OTA_HOST=ip to skip repeater.local)"
+depends = ["build"]
+dir = "{{config_root}}/firmware"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+host=${OTA_HOST:-repeater.local}
+espflash save-image --chip esp32c6 {{vars.elf}} target/ota.bin >/dev/null
+api() { curl -sf -m 3 "http://$host/api/status"; }
+# Print fields of the status JSON, space-separated.
+field() { python3 -I -c "import sys,json; d=json.load(sys.stdin); print(*eval(sys.argv[1]))" "$1"; }
+before=$(api | field '[d["ota"]["slot"]]')
+echo "running $before; uploading $(stat -c %s target/ota.bin) B to $host"
+# The password goes through a pipe, not the command line (printf is a builtin).
+password_header() { printf 'X-OTA-Password: %s\n' "$OTA_PASS"; }
+curl -sS --fail-with-body -m 180 -H @<(password_header) --data-binary @target/ota.bin "http://$host/update"
+start=$SECONDS
+sleep 5
+while (( SECONDS - start < 400 )); do
+  if status=$(api); then
+    read -r slot state uptime < <(echo "$status" | field 'd["ota"]["slot"], d["ota"]["state"], d["uptime_s"]')
+    if (( uptime <= SECONDS - start + 5 )); then
+      if [[ $slot == "$before" ]]; then echo "rolled back to $slot: the update didn't confirm"; exit 1; fi
+      if [[ $state == confirmed ]]; then echo "now running $slot, confirmed"; exit 0; fi
+      echo "booted $slot on trial, waiting for its lease..."
+    fi
+  fi
+  sleep 3
+done
+echo "no confirmation after 400 s"; exit 1
+'''
+
+[tasks.test]
+description = "Run the bridge-core tests on this computer"
+dir = "{{config_root}}/bridge-core"
+run = "{{vars.capped}} cargo test -j4"
+
+[tasks.clippy]
+description = "Lint the firmware and bridge-core with clippy"
+run = [
+  "cd firmware && {{vars.capped}} cargo clippy --release -j4",
+  "cd bridge-core && {{vars.capped}} cargo clippy -j4 --all-targets",
+]
+
+[tasks.check]
+description = "Run the tests and the lint"
+depends = ["test", "clippy"]
+
+[tasks.laptop-test]
+description = "Move this laptop to the repeater's network, test it, and move back (SPEED_ONLY=1 for speed only)"
+run = '''
+setsid nohup ./laptop-test.sh >/dev/null 2>&1 </dev/null &
+sleep 3
+for _ in $(seq 1 70); do grep -q DONE test-logs/laptop_test.log && break; sleep 3; done
+grep -vE '^(bssid|wpa_state)=' test-logs/laptop_test.log
+echo "--- ESP log"
+sed 's/\x1b\[[0-9;]*m//g' test-logs/esp_during_test.log | tr -s ' ' | grep -aE 'from uplink|WARN|ERROR|panic' | tail -12
+'''
+
+[tasks.speed]
+description = "Speed test through the repeater (this laptop changes network for about a minute)"
+env = { SPEED_ONLY = "1" }
+run = "mise run laptop-test"
+
+[tasks.status]
+description = "Print the repeater's status as JSON"
+run = '''
+curl -sf -m 5 http://repeater.local/api/status | python3 -I -m json.tool
+'''
+
+[tasks.open]
+description = "Open the status page in the browser"
+run = "xdg-open http://repeater.local/"
